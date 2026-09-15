@@ -1,0 +1,19 @@
+import Link from 'next/link';
+import { deleteWorkLog } from '@/app/actions/work-logs';
+import type { WorkTraceLog } from '@/lib/worktrace-data';
+import { formatWorkTraceDateTime } from '@/lib/time';
+
+export type LogPreview = WorkTraceLog;
+
+function compactDate(value: string) {
+  return formatWorkTraceDateTime(value, 'zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+export function LogList({ logs, management = false }: { logs: LogPreview[]; management?: boolean }) {
+  return <div className="wt-log-list">
+    {logs.map((log) => <div key={log.id} className={management ? 'wt-log-row wt-log-row-management' : 'wt-log-row'}>
+      <Link className="wt-log-main" href={`/console/logs/${log.id}${management ? '?from=admin' : ''}`}><div><strong>{log.title}</strong><p>{log.completed.join('；')}</p></div><span>{log.authorEmail}</span><span>{compactDate(log.updatedAt ?? log.createdAt)}</span><span className="wt-source">Web</span></Link>
+      {management && <form action={deleteWorkLog}><input type="hidden" name="id" value={log.id} /><input type="hidden" name="returnTo" value="admin" /><button className="wt-danger-link" type="submit">删除</button></form>}
+    </div>)}
+  </div>;
+}
