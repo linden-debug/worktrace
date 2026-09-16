@@ -9,7 +9,7 @@ describe('API authentication headers', () => {
   });
 
   it('uses the supplied Bearer secret to resolve the request identity', () => {
-    const user = { id: 'u1', email: 'member@example.com', name: 'Member', role: 'MEMBER' as const };
+    const user = { id: 'u1', email: 'member@feedmob.com', name: 'Member', role: 'MEMBER' as const };
     const database = { authenticateApiKey: (secret: string) => secret === 'wtk_valid' ? user : undefined };
 
     expect(authenticateApiRequest('Bearer wtk_valid', database)).toEqual(user);
@@ -17,8 +17,8 @@ describe('API authentication headers', () => {
   });
 
   it('does not fall back to a browser session when an API key was supplied but is invalid', () => {
-    const apiKeyUser = { id: 'qa', email: 'qa@example.com' };
-    const browserSessionUser = { id: 'linden', email: 'linden@example.com' };
+    const apiKeyUser = { id: 'qa', email: 'qa@feedmob.com' };
+    const browserSessionUser = { id: 'linden', email: 'linden@feedmob.com' };
     const database = { authenticateApiKey: (secret: string) => secret === 'wtk_qa' ? apiKeyUser : undefined };
 
     expect(resolveApiKeyOrSessionUser('Bearer wtk_invalid', database, browserSessionUser)).toBeUndefined();

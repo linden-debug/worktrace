@@ -3,8 +3,8 @@ import { isAdminEmail, visibleNavigation } from './access';
 
 describe('WorkTrace role policy', () => {
   it('bootstraps Linden as the only initial administrator', () => {
-    expect(isAdminEmail('linden@example.com')).toBe(true);
-    expect(isAdminEmail('member@example.com')).toBe(false);
+    expect(isAdminEmail('linden@feedmob.com')).toBe(true);
+    expect(isAdminEmail('rachel.lu@feedmob.com')).toBe(false);
   });
 
   it('does not expose management pages to members', () => {

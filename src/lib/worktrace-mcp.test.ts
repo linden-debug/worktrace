@@ -16,7 +16,7 @@ describe('WorkTrace MCP tools', () => {
 
   it('updates an authenticated owner\'s work log through MCP and records the update', async () => {
     const db = createDatabase(':memory:');
-    const owner = db.findOrCreateUser('member@example.com', 'Member');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
     const log = db.createWorkLog(owner.id, { title: 'Original title', completed: ['Original completion'] });
     const server = createWorkTraceMcpServer(db, owner);
     const client = new Client({ name: 'worktrace-mcp-test', version: '1.0.0' });
@@ -50,7 +50,7 @@ describe('WorkTrace MCP tools', () => {
 
   it('replaces the authenticated user\'s existing log when create_work_log is called again today', async () => {
     const db = createDatabase(':memory:');
-    const owner = db.findOrCreateUser('member@example.com', 'Member');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
     const server = createWorkTraceMcpServer(db, owner);
     const client = new Client({ name: 'worktrace-mcp-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -61,6 +61,33 @@ describe('WorkTrace MCP tools', () => {
 
     const content = replacement.content.find((item) => item.type === 'text');
     expect(JSON.parse(content?.text ?? '{}')).toMatchObject({ created: false, log: { title: 'Latest', completed: ['Collected notes', 'Submitted report'] } });
+    expect(db.listWorkLogs(owner.id)).toHaveLength(1);
+
+    await client.close();
+    await server.close();
+    db.close();
+  });
+
+  it('creates a catch-up log for an explicit past report date and rejects future dates', async () => {
+    const db = createDatabase(':memory:');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const server = createWorkTraceMcpServer(db, owner);
+    const client = new Client({ name: 'worktrace-mcp-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const catchUp = await client.request({
+      method: 'tools/call',
+      params: { name: 'create_work_log', arguments: { reportDate: '2026-09-14', title: 'Catch-up', completed: ['Reconciled data'] } },
+    }, CallToolResultSchema);
+    const future = await client.request({
+      method: 'tools/call',
+      params: { name: 'create_work_log', arguments: { reportDate: '2999-01-01', title: 'Future', completed: ['Not allowed'] } },
+    }, CallToolResultSchema);
+
+    const catchUpContent = catchUp.content.find((item) => item.type === 'text');
+    expect(JSON.parse(catchUpContent?.text ?? '{}')).toMatchObject({ created: true, log: { reportDate: '2026-09-14', title: 'Catch-up' } });
+    expect(future.isError).toBe(true);
     expect(db.listWorkLogs(owner.id)).toHaveLength(1);
 
     await client.close();

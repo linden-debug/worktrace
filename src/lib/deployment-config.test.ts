@@ -26,6 +26,6 @@ describe('production deployment configuration', () => {
   it('pins Auth.js to the public production origin', () => {
     const environment = readFileSync(resolve(root, 'deploy', 'worktrace.env.example'), 'utf8');
 
-    expect(environment).toContain('AUTH_URL=https://worktrace.example.com');
+    expect(environment).toContain('AUTH_URL=https://worktrace.techmob.net');
   });
 });

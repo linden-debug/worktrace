@@ -1,9 +1,11 @@
 import type { createDatabase } from './db';
+import { workTraceReportDate } from './report-date';
 
 type WorkTraceDatabase = ReturnType<typeof createDatabase>;
 
 export type WorkTraceLog = {
   id: string;
+  reportDate?: string;
   title: string;
   completed: string[];
   inProgress: string;
@@ -75,16 +77,20 @@ export function filterLogsByQuery(logs: WorkTraceLog[], query: string) {
 }
 
 export function filterLogsByPeriod(logs: WorkTraceLog[], period: OverviewPeriod, now = new Date()): WorkTraceLog[] {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
+  const today = workTraceReportDate(now);
+  const start = new Date(`${today}T00:00:00.000Z`);
 
   if (period === 'week') {
-    const day = start.getDay();
-    start.setDate(start.getDate() - (day === 0 ? 6 : day - 1));
+    const day = start.getUTCDay();
+    start.setUTCDate(start.getUTCDate() - (day === 0 ? 6 : day - 1));
   }
-  if (period === 'month') start.setDate(1);
+  if (period === 'month') start.setUTCDate(1);
+  const from = start.toISOString().slice(0, 10);
 
-  return logs.filter((log) => new Date(log.createdAt) >= start);
+  return logs.filter((log) => {
+    const reportDate = log.reportDate ?? workTraceReportDate(new Date(log.createdAt));
+    return reportDate >= from && reportDate <= today;
+  });
 }
 
 function toLogViews(database: WorkTraceDatabase) {
@@ -94,7 +100,7 @@ function toLogViews(database: WorkTraceDatabase) {
     return {
       ...log,
       authorName: author?.name ?? '未知成员',
-      authorEmail: author?.email ?? 'unknown@example.com',
+      authorEmail: author?.email ?? 'unknown@feedmob.com',
     };
   });
 }
@@ -104,10 +110,12 @@ export function loadConsoleData(database: WorkTraceDatabase, currentUserId: stri
   const users = database.listUsers();
   const overviewLogs = period ? filterLogsByPeriod(logs, period) : logs;
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  const twoDaysAgo = new Date(now);
-  twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-  const submittedToday = overviewLogs.filter((log) => log.createdAt.slice(0, 10) === today);
+  const today = workTraceReportDate(now);
+  const twoDaysAgo = new Date(`${today}T00:00:00.000Z`);
+  twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
+  const recentFrom = twoDaysAgo.toISOString().slice(0, 10);
+  const reportDateOf = (log: WorkTraceLog) => log.reportDate ?? workTraceReportDate(new Date(log.createdAt));
+  const submittedToday = overviewLogs.filter((log) => reportDateOf(log) === today);
   const activeSubmitters = new Set(overviewLogs.map((log) => log.authorId)).size;
   const rankings = [...overviewLogs.reduce((totals, log) => {
     totals.set(log.authorId, (totals.get(log.authorId) ?? 0) + 1);
@@ -125,13 +133,13 @@ export function loadConsoleData(database: WorkTraceDatabase, currentUserId: stri
       activeSubmitters,
       submittedToday: submittedToday.length,
       lastSubmittedAt: overviewLogs[0]?.updatedAt ?? overviewLogs[0]?.createdAt ?? null,
-      recentLogs: logs.filter((log) => new Date(log.createdAt) >= twoDaysAgo),
+      recentLogs: logs.filter((log) => reportDateOf(log) >= recentFrom),
       rankings,
       memberSubmissionStatus: users.map((member) => ({
         id: member.id,
         name: member.name,
         email: member.email,
-        submittedToday: logs.some((log) => log.authorId === member.id && log.createdAt.slice(0, 10) === today),
+        submittedToday: logs.some((log) => log.authorId === member.id && reportDateOf(log) === today),
       })),
     },
   };

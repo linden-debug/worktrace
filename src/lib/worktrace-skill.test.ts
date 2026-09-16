@@ -8,5 +8,8 @@ describe('WorkTrace Skill', () => {
     expect(markdown).toContain('Do not invent');
     expect(markdown).toContain('confirm');
     expect(markdown).toContain('https://worktrace.example.com/mcp');
+    expect(markdown).toContain('reportDate');
+    expect(markdown).toContain('Asia/Shanghai');
+    expect(markdown).toContain('future dates');
   });
 });

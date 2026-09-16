@@ -2,8 +2,8 @@
 
 ## 身份与角色
 
-- Google OAuth 回调必须验证邮箱域名为 `example.com`。
-- `User.role` 是 `member | admin`；`linden@example.com` 被初始化为管理员。
+- Google OAuth 回调必须验证邮箱域名为 `feedmob.com`。
+- `User.role` 是 `member | admin`；`linden@feedmob.com` 被初始化为管理员。
 - 会话与 `GET /api/v1/me` 返回角色，前端据此呈现导航。
 
 ## 管理员接口

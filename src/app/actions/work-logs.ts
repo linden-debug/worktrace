@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
 import { createDatabase } from '@/lib/db';
 import { normalizeWorkLogSection } from '@/lib/agent-work-logs';
+import { resolveReportDate } from '@/lib/report-date';
 
 export async function createWorkLog(formData: FormData) {
   const session = await auth();
@@ -13,10 +14,13 @@ export async function createWorkLog(formData: FormData) {
   const title = String(formData.get('title') ?? '').trim();
   const completed = String(formData.get('completed') ?? '').split('\n').map((item) => item.trim()).filter(Boolean);
   if (!title || !completed.length) redirect('/console/logs/new?error=required');
+  let reportDate: string;
+  try { reportDate = resolveReportDate(String(formData.get('reportDate') ?? '')); }
+  catch { redirect('/console/logs/new?error=date'); }
 
   const database = createDatabase();
   try {
-    database.upsertDailyWorkLog(user.id, { title, completed, inProgress: normalizeWorkLogSection(String(formData.get('inProgress') ?? '')), blockers: normalizeWorkLogSection(String(formData.get('blockers') ?? '')), nextPlan: normalizeWorkLogSection(String(formData.get('nextPlan') ?? '')) });
+    database.upsertDailyWorkLog(user.id, { reportDate, title, completed, inProgress: normalizeWorkLogSection(String(formData.get('inProgress') ?? '')), blockers: normalizeWorkLogSection(String(formData.get('blockers') ?? '')), nextPlan: normalizeWorkLogSection(String(formData.get('nextPlan') ?? '')) });
   } finally { database.close(); }
   redirect('/console/my-logs?created=1');
 }

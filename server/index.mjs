@@ -11,15 +11,15 @@ const prototypePages = new Map([
   ['/console/logs/new', 'new-log.html'], ['/console/api-keys', 'api-keys.html'], ['/console/my-logs', 'my-logs.html'],
 ]);
 
-const resolveRole = (req) => roleForEmail(String(req.query.as ?? 'linden@example.com'));
+const resolveRole = (req) => roleForEmail(String(req.query.as ?? 'linden@feedmob.com'));
 const requireAdmin = (req, res, next) => canAccessAdmin(resolveRole(req)) ? next() : res.status(403).json({ code: 'FORBIDDEN', message: 'Administrator access required.' });
 
 app.use(express.json());
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'worktrace' }));
-app.get('/api/v1/me', (req, res) => { const email = String(req.query.as ?? 'linden@example.com'); res.json({ email, role: resolveRole(req) }); });
+app.get('/api/v1/me', (req, res) => { const email = String(req.query.as ?? 'linden@feedmob.com'); res.json({ email, role: resolveRole(req) }); });
 app.get('/api/v1/navigation', (req, res) => res.json({ role: resolveRole(req), items: navigationFor(resolveRole(req)) }));
-app.get('/api/v1/admin/members', requireAdmin, (_req, res) => res.json({ data: [{ email: 'linden@example.com', role: 'admin' }, { email: 'member@example.com', role: 'member' }] }));
-app.get('/api/v1/admin/access', requireAdmin, (_req, res) => res.json({ allowedDomains: ['example.com'], bootstrapAdmin: 'linden@example.com' }));
+app.get('/api/v1/admin/members', requireAdmin, (_req, res) => res.json({ data: [{ email: 'linden@feedmob.com', role: 'admin' }, { email: 'rachel.lu@feedmob.com', role: 'member' }] }));
+app.get('/api/v1/admin/access', requireAdmin, (_req, res) => res.json({ allowedDomains: ['feedmob.com'], bootstrapAdmin: 'linden@feedmob.com' }));
 app.get('/api/v1/admin/logs', requireAdmin, (_req, res) => res.json({ data: [] }));
 app.get('/api/v1/admin/audit', requireAdmin, (_req, res) => res.json({ data: [] }));
 

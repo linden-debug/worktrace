@@ -1,4 +1,4 @@
-export const ADMIN_EMAIL = 'linden@example.com';
+export const ADMIN_EMAIL = 'linden@feedmob.com';
 
 const baseNavigation = [
   { id: 'overview', href: '/console', label: '概览' },

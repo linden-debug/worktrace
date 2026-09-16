@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import Database from 'better-sqlite3';
 import { createApiKey } from './api-keys';
 import { createDatabase } from './db';
 
@@ -12,6 +14,25 @@ describe('local WorkTrace database', () => {
     db.close();
   });
 
+  it('migrates existing logs by deriving their Shanghai report date from creation time', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'worktrace-report-date-'));
+    const filename = join(directory, 'legacy.db');
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE work_logs (id TEXT PRIMARY KEY, author_id TEXT NOT NULL, title TEXT NOT NULL, completed TEXT NOT NULL, in_progress TEXT NOT NULL DEFAULT '', blockers TEXT NOT NULL DEFAULT '', next_plan TEXT NOT NULL DEFAULT '', idempotency_key TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      INSERT INTO work_logs (id, author_id, title, completed, created_at, updated_at) VALUES ('legacy-log', 'member-1', 'Legacy', '["Done"]', '2026-09-04T16:30:00.000Z', '2026-09-04T16:30:00.000Z');
+    `);
+    legacy.close();
+
+    try {
+      const migrated = createDatabase(filename);
+      expect(migrated.getWorkLog('legacy-log')).toMatchObject({ reportDate: '2026-09-05' });
+      migrated.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('does not rebuild the full-text index each time a database connection is opened', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/lib/db.ts'), 'utf8');
 
@@ -20,7 +41,7 @@ describe('local WorkTrace database', () => {
 
   it('creates the bootstrap administrator and persists a work log', () => {
     const db = createDatabase(':memory:');
-    const admin = db.findOrCreateUser('linden@example.com', 'Linden');
+    const admin = db.findOrCreateUser('linden@feedmob.com', 'Linden');
     expect(admin.role).toBe('ADMIN');
     const log = db.createWorkLog(admin.id, { title: 'First trace', completed: ['Defined the platform'] });
     expect(db.listWorkLogs(admin.id)).toEqual([expect.objectContaining({ id: log.id, title: 'First trace' })]);
@@ -30,7 +51,7 @@ describe('local WorkTrace database', () => {
 
   it('paginates work logs with a stable cursor', () => {
     const db = createDatabase(':memory:');
-    const user = db.findOrCreateUser('member@example.com', 'Member');
+    const user = db.findOrCreateUser('member@feedmob.com', 'Member');
     db.createWorkLog(user.id, { title: 'One', completed: ['Done'] });
     db.createWorkLog(user.id, { title: 'Two', completed: ['Done'] });
     db.createWorkLog(user.id, { title: 'Three', completed: ['Done'] });
@@ -47,8 +68,8 @@ describe('local WorkTrace database', () => {
 
   it('combines author and text query filtering in SQLite', () => {
     const db = createDatabase(':memory:');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
-    const other = db.findOrCreateUser('other@example.com', 'Other');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const other = db.findOrCreateUser('other@feedmob.com', 'Other');
     db.createWorkLog(member.id, { title: 'Release checklist', completed: ['Published'], blockers: 'Waiting for vendor reply' });
     db.createWorkLog(other.id, { title: 'Vendor contract', completed: ['Reviewed'] });
 
@@ -56,9 +77,23 @@ describe('local WorkTrace database', () => {
     db.close();
   });
 
+  it('applies date-range queries to the report date instead of the submission timestamp', () => {
+    const db = createDatabase(':memory:');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const catchUp = db.upsertDailyWorkLog(member.id, { reportDate: '2026-09-14', title: 'Catch-up', completed: ['Done'] }, new Date('2026-09-16T12:00:00+08:00'));
+
+    const result = db.queryWorkLogs({
+      from: '2026-09-13T16:00:00.000Z',
+      to: '2026-09-14T16:00:00.000Z',
+    });
+
+    expect(result.items.map((log) => log.id)).toEqual([catchUp.log.id]);
+    db.close();
+  });
+
   it('returns an existing work log when an API upload is retried with the same idempotency key', () => {
     const db = createDatabase(':memory:');
-    const user = db.findOrCreateUser('member@example.com', 'Member');
+    const user = db.findOrCreateUser('member@feedmob.com', 'Member');
     const first = db.createWorkLogIdempotent(user.id, { title: 'Upload', completed: ['Done'] }, 'upload-001');
     const retry = db.createWorkLogIdempotent(user.id, { title: 'Upload', completed: ['Done'] }, 'upload-001');
 
@@ -70,8 +105,8 @@ describe('local WorkTrace database', () => {
 
   it('replaces only the same author\'s work log within one Shanghai calendar day', () => {
     const db = createDatabase(':memory:');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
-    const teammate = db.findOrCreateUser('teammate@example.com', 'Teammate');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const teammate = db.findOrCreateUser('teammate@feedmob.com', 'Teammate');
 
     const first = db.upsertDailyWorkLog(member.id, { title: 'Morning update', completed: ['Investigated'] }, new Date('2026-09-05T09:00:00+08:00'));
     const replacement = db.upsertDailyWorkLog(member.id, { title: 'Afternoon update', completed: ['Investigated', 'Fixed'], blockers: 'Waiting for review' }, new Date('2026-09-05T16:00:00+08:00'));
@@ -89,9 +124,42 @@ describe('local WorkTrace database', () => {
     db.close();
   });
 
+  it('stores a historical report date and replaces only that author/date pair', () => {
+    const db = createDatabase(':memory:');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
+
+    const historical = db.upsertDailyWorkLog(member.id, {
+      reportDate: '2026-09-14',
+      title: '补交周一日报',
+      completed: ['完成历史数据核对'],
+    }, new Date('2026-09-16T10:00:00+08:00'));
+    const replacement = db.upsertDailyWorkLog(member.id, {
+      reportDate: '2026-09-14',
+      title: '更新周一日报',
+      completed: ['完成历史数据核对', '补充结论'],
+    }, new Date('2026-09-16T20:00:00+08:00'));
+    const anotherDate = db.upsertDailyWorkLog(member.id, {
+      reportDate: '2026-09-15',
+      title: '补交周二日报',
+      completed: ['完成接口检查'],
+    }, new Date('2026-09-16T20:05:00+08:00'));
+
+    expect(historical).toMatchObject({
+      created: true,
+      log: { reportDate: '2026-09-14', createdAt: '2026-09-16T02:00:00.000Z' },
+    });
+    expect(replacement).toMatchObject({
+      created: false,
+      log: { id: historical.log.id, reportDate: '2026-09-14', title: '更新周一日报', updatedAt: '2026-09-16T12:00:00.000Z' },
+    });
+    expect(anotherDate).toMatchObject({ created: true, log: { reportDate: '2026-09-15' } });
+    expect(db.listWorkLogs(member.id)).toHaveLength(2);
+    db.close();
+  });
+
   it('preserves the original creation time while refreshing the last submission time', () => {
     const db = createDatabase(':memory:');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
     const first = db.upsertDailyWorkLog(member.id, { title: 'Morning update', completed: ['Investigated'] }, new Date('2026-09-05T09:10:00+08:00'));
     const replacement = db.upsertDailyWorkLog(member.id, { title: 'Evening update', completed: ['Investigated', 'Fixed'] }, new Date('2026-09-05T20:00:00+08:00'));
 
@@ -115,7 +183,7 @@ describe('local WorkTrace database', () => {
 
   it('keeps an idempotent daily-upload retry from replacing a later submission', () => {
     const db = createDatabase(':memory:');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
     const first = db.upsertDailyWorkLogIdempotent(member.id, { title: 'First upload', completed: ['Done'] }, 'request-1', new Date('2026-09-05T09:00:00+08:00'));
     const replacement = db.upsertDailyWorkLogIdempotent(member.id, { title: 'Latest upload', completed: ['Done', 'Reviewed'] }, 'request-2', new Date('2026-09-05T15:00:00+08:00'));
     const retry = db.upsertDailyWorkLogIdempotent(member.id, { title: 'First upload', completed: ['Done'] }, 'request-1', new Date('2026-09-05T16:00:00+08:00'));
@@ -129,7 +197,7 @@ describe('local WorkTrace database', () => {
 
   it('stores a personal key encrypted and writes audit events for sensitive actions', () => {
     const db = createDatabase(':memory:');
-    const user = db.findOrCreateUser('member@example.com', 'Member');
+    const user = db.findOrCreateUser('member@feedmob.com', 'Member');
     const generated = createApiKey('Codex');
 
     const key = db.createApiKey(user.id, generated);
@@ -144,9 +212,9 @@ describe('local WorkTrace database', () => {
   it('attributes uploads from every API key to that key owner across multiple users', () => {
     const db = createDatabase(':memory:');
     const owners = [
-      db.findOrCreateUser('qa@example.com', 'QA'),
-      db.findOrCreateUser('product@example.com', 'Product'),
-      db.findOrCreateUser('engineering@example.com', 'Engineering'),
+      db.findOrCreateUser('qa@feedmob.com', 'QA'),
+      db.findOrCreateUser('product@feedmob.com', 'Product'),
+      db.findOrCreateUser('engineering@feedmob.com', 'Engineering'),
     ];
 
     for (const owner of owners) {
@@ -164,7 +232,7 @@ describe('local WorkTrace database', () => {
 
   it('rejects disabled and revoked keys during API authentication', () => {
     const db = createDatabase(':memory:');
-    const user = db.findOrCreateUser('member@example.com', 'Member');
+    const user = db.findOrCreateUser('member@feedmob.com', 'Member');
     const generated = createApiKey('Automation');
     const key = db.createApiKey(user.id, generated);
 
@@ -181,8 +249,8 @@ describe('local WorkTrace database', () => {
 
   it('prevents removal of the final administrator', () => {
     const db = createDatabase(':memory:');
-    const linden = db.findOrCreateUser('linden@example.com', 'Linden');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
+    const linden = db.findOrCreateUser('linden@feedmob.com', 'Linden');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
 
     expect(() => db.setUserRole(linden.id, 'MEMBER')).toThrow('last administrator');
     db.setUserRole(member.id, 'ADMIN');
@@ -192,8 +260,8 @@ describe('local WorkTrace database', () => {
 
   it('records the administrator as the actor of a role change', () => {
     const db = createDatabase(':memory:');
-    const admin = db.findOrCreateUser('linden@example.com', 'Linden');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
+    const admin = db.findOrCreateUser('linden@feedmob.com', 'Linden');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
 
     db.setUserRole(member.id, 'ADMIN', admin.id);
 
@@ -203,8 +271,8 @@ describe('local WorkTrace database', () => {
 
   it('lets an administrator remove another member while protecting their own account and the final administrator', () => {
     const db = createDatabase(':memory:');
-    const admin = db.findOrCreateUser('linden@example.com', 'Linden');
-    const member = db.findOrCreateUser('member@example.com', 'Member');
+    const admin = db.findOrCreateUser('linden@feedmob.com', 'Linden');
+    const member = db.findOrCreateUser('member@feedmob.com', 'Member');
     db.createWorkLog(member.id, { title: 'Member log', completed: ['Done'] });
 
     expect(() => db.deleteUser(member.id, admin.id)).not.toThrow();
@@ -217,8 +285,8 @@ describe('local WorkTrace database', () => {
 
   it('persists every structured daily-log section and lets only the owner update it', () => {
     const db = createDatabase(':memory:');
-    const owner = db.findOrCreateUser('member@example.com', 'Member');
-    const other = db.findOrCreateUser('other@example.com', 'Other');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const other = db.findOrCreateUser('other@feedmob.com', 'Other');
     const log = db.createWorkLog(owner.id, {
       title: 'Daily trace', completed: ['Completed item'], inProgress: 'In progress item', blockers: 'Blocked item', nextPlan: 'Next plan item',
     });
@@ -231,7 +299,7 @@ describe('local WorkTrace database', () => {
 
   it('associates image attachment metadata with a work log', () => {
     const db = createDatabase(':memory:');
-    const owner = db.findOrCreateUser('member@example.com', 'Member');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
     const log = db.createWorkLog(owner.id, { title: 'Attached trace', completed: ['Done'] });
 
     db.addWorkLogAttachments(log.id, [{
@@ -246,8 +314,8 @@ describe('local WorkTrace database', () => {
 
   it('allows an administrator but not another member to delete a work log', () => {
     const db = createDatabase(':memory:');
-    const owner = db.findOrCreateUser('member@example.com', 'Member');
-    const admin = db.findOrCreateUser('linden@example.com', 'Linden');
+    const owner = db.findOrCreateUser('member@feedmob.com', 'Member');
+    const admin = db.findOrCreateUser('linden@feedmob.com', 'Linden');
     const log = db.createWorkLog(owner.id, { title: 'Delete me', completed: ['Done'], inProgress: '', blockers: '', nextPlan: '' });
 
     expect(() => db.deleteWorkLog(log.id, owner.id, 'MEMBER')).not.toThrow();

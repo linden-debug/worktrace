@@ -1,16 +1,17 @@
 import Database from 'better-sqlite3';
 import { isAdminEmail } from './access';
 import { decryptApiKey, verifyApiKey } from './api-keys';
+import { resolveReportDate, workTraceReportDate } from './report-date';
 
 type LocalDatabase = Database.Database;
 export type LocalUser = { id: string; email: string; name: string; role: 'ADMIN' | 'MEMBER' };
-export type WorkLogInput = { title: string; completed: string[]; inProgress?: string; blockers?: string; nextPlan?: string };
-export type LocalWorkLog = { id: string; authorId: string; title: string; completed: string[]; inProgress: string; blockers: string; nextPlan: string; createdAt: string; updatedAt: string };
+export type WorkLogInput = { reportDate?: string; title: string; completed: string[]; inProgress?: string; blockers?: string; nextPlan?: string };
+export type LocalWorkLog = { id: string; authorId: string; reportDate: string; title: string; completed: string[]; inProgress: string; blockers: string; nextPlan: string; createdAt: string; updatedAt: string };
 export type LocalWorkLogAttachment = { id: string; workLogId: string; filename: string; storageKey: string; mimeType: string; size: number; createdAt: string };
 export type NewWorkLogAttachment = Pick<LocalWorkLogAttachment, 'filename' | 'storageKey' | 'mimeType' | 'size'>;
 export type LocalApiKey = { id: string; userId: string; name: string; prefix: string; status: 'ACTIVE' | 'DISABLED' | 'REVOKED'; createdAt: string; lastUsedAt: string | null };
 export type AuditEvent = { id: string; actorId: string; type: string; targetType: string; targetId: string; createdAt: string };
-export type WorkLogQuery = { authorId?: string; query?: string; from?: string; to?: string; cursor?: string | null; limit?: number };
+export type WorkLogQuery = { authorId?: string; query?: string; reportDate?: string; from?: string; to?: string; cursor?: string | null; limit?: number };
 
 type NewApiKey = { name: string; prefix: string; lookupPrefix: string; hash: string; encryptedSecret: string };
 
@@ -21,13 +22,17 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
   sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS work_logs (id TEXT PRIMARY KEY, author_id TEXT NOT NULL, title TEXT NOT NULL, completed TEXT NOT NULL, in_progress TEXT NOT NULL DEFAULT '', blockers TEXT NOT NULL DEFAULT '', next_plan TEXT NOT NULL DEFAULT '', idempotency_key TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS work_logs (id TEXT PRIMARY KEY, author_id TEXT NOT NULL, report_date TEXT NOT NULL, title TEXT NOT NULL, completed TEXT NOT NULL, in_progress TEXT NOT NULL DEFAULT '', blockers TEXT NOT NULL DEFAULT '', next_plan TEXT NOT NULL DEFAULT '', idempotency_key TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS work_log_requests (author_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, work_log_id TEXT NOT NULL REFERENCES work_logs(id) ON DELETE CASCADE, PRIMARY KEY (author_id, idempotency_key));
     CREATE TABLE IF NOT EXISTS work_log_attachments (id TEXT PRIMARY KEY, work_log_id TEXT NOT NULL REFERENCES work_logs(id) ON DELETE CASCADE, filename TEXT NOT NULL, storage_key TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, prefix TEXT NOT NULL, lookup_prefix TEXT, hash TEXT NOT NULL, encrypted_secret TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT);
     CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, type TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, created_at TEXT NOT NULL);
   `);
   const workLogColumns = new Set((sqlite.prepare('PRAGMA table_info(work_logs)').all() as { name: string }[]).map((column) => column.name));
+  if (!workLogColumns.has('report_date')) {
+    sqlite.exec('ALTER TABLE work_logs ADD COLUMN report_date TEXT');
+    sqlite.exec("UPDATE work_logs SET report_date = date(created_at, '+8 hours') WHERE report_date IS NULL OR report_date = ''");
+  }
   for (const [name, definition] of [['in_progress', "TEXT NOT NULL DEFAULT ''"], ['blockers', "TEXT NOT NULL DEFAULT ''"], ['next_plan', "TEXT NOT NULL DEFAULT ''"], ['idempotency_key', 'TEXT'], ['updated_at', 'TEXT']] as const) {
     if (!workLogColumns.has(name)) sqlite.exec(`ALTER TABLE work_logs ADD COLUMN ${name} ${definition}`);
   }
@@ -37,6 +42,7 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
   sqlite.prepare("UPDATE api_keys SET lookup_prefix = substr(prefix, 1, 12) WHERE lookup_prefix IS NULL").run();
   sqlite.exec(`
     CREATE INDEX IF NOT EXISTS idx_work_logs_author_created ON work_logs(author_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_work_logs_author_report_date ON work_logs(author_id, report_date DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_work_logs_created ON work_logs(created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_work_logs_updated ON work_logs(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_work_log_attachments_log ON work_log_attachments(work_log_id, created_at ASC);
@@ -56,7 +62,7 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
   `);
 
   function asWorkLog(row: any): LocalWorkLog {
-    return { id: row.id, authorId: row.author_id, title: row.title, completed: JSON.parse(row.completed), inProgress: row.in_progress ?? '', blockers: row.blockers ?? '', nextPlan: row.next_plan ?? '', createdAt: row.created_at, updatedAt: row.updated_at ?? row.created_at };
+    return { id: row.id, authorId: row.author_id, reportDate: row.report_date ?? workTraceReportDate(new Date(row.created_at)), title: row.title, completed: JSON.parse(row.completed), inProgress: row.in_progress ?? '', blockers: row.blockers ?? '', nextPlan: row.next_plan ?? '', createdAt: row.created_at, updatedAt: row.updated_at ?? row.created_at };
   }
 
   function parseCursor(cursor?: string | null): { createdAt: string; id: string } | undefined {
@@ -71,12 +77,6 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
     return value.trim().split(/\s+/).filter(Boolean).map((term) => `"${term.replaceAll('"', '""')}"`).join(' ');
   }
 
-  function shanghaiDayRange(now: Date) {
-    const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-    const start = new Date(`${date}T00:00:00+08:00`);
-    return { from: start.toISOString(), to: new Date(start.getTime() + 86_400_000).toISOString() };
-  }
-
   function writeAuditEvent(actorId: string, type: string, targetType: string, targetId: string): AuditEvent {
     const event: AuditEvent = { id: crypto.randomUUID(), actorId, type, targetType, targetId, createdAt: new Date().toISOString() };
     sqlite.prepare('INSERT INTO audit_events (id, actor_id, type, target_type, target_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -85,18 +85,18 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
   }
 
   function saveDailyWorkLog(authorId: string, input: WorkLogInput, now: Date) {
-    const { from, to } = shanghaiDayRange(now);
-    const existing = sqlite.prepare('SELECT * FROM work_logs WHERE author_id = ? AND created_at >= ? AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT 1').get(authorId, from, to) as any;
+    const reportDate = resolveReportDate(input.reportDate, now);
+    const existing = sqlite.prepare('SELECT * FROM work_logs WHERE author_id = ? AND report_date = ? ORDER BY updated_at DESC, id DESC LIMIT 1').get(authorId, reportDate) as any;
     if (existing) {
       const current = asWorkLog(existing);
-      const log: LocalWorkLog = { ...current, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', updatedAt: now.toISOString() };
+      const log: LocalWorkLog = { ...current, reportDate, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', updatedAt: now.toISOString() };
       sqlite.prepare('UPDATE work_logs SET title = ?, completed = ?, in_progress = ?, blockers = ?, next_plan = ?, updated_at = ? WHERE id = ?').run(log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, log.updatedAt, log.id);
       writeAuditEvent(authorId, 'WORK_LOG_UPDATED', 'WORK_LOG', log.id);
       return { log, created: false };
     }
     const submittedAt = now.toISOString();
-    const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: submittedAt, updatedAt: submittedAt };
-    sqlite.prepare('INSERT INTO work_logs (id, author_id, title, completed, in_progress, blockers, next_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, log.createdAt, log.updatedAt);
+    const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, reportDate, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: submittedAt, updatedAt: submittedAt };
+    sqlite.prepare('INSERT INTO work_logs (id, author_id, report_date, title, completed, in_progress, blockers, next_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.reportDate, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, log.createdAt, log.updatedAt);
     writeAuditEvent(authorId, 'WORK_LOG_CREATED', 'WORK_LOG', log.id);
     return { log, created: true };
   }
@@ -146,8 +146,9 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
     },
     createWorkLog(authorId: string, input: WorkLogInput): LocalWorkLog {
       const now = new Date().toISOString();
-      const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: now, updatedAt: now };
-      sqlite.prepare('INSERT INTO work_logs (id, author_id, title, completed, in_progress, blockers, next_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, log.createdAt, log.updatedAt);
+      const reportDate = resolveReportDate(input.reportDate, new Date(now));
+      const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, reportDate, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: now, updatedAt: now };
+      sqlite.prepare('INSERT INTO work_logs (id, author_id, report_date, title, completed, in_progress, blockers, next_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.reportDate, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, log.createdAt, log.updatedAt);
       writeAuditEvent(authorId, 'WORK_LOG_CREATED', 'WORK_LOG', log.id);
       return log;
     },
@@ -156,8 +157,9 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
         const existing = sqlite.prepare('SELECT * FROM work_logs WHERE author_id = ? AND idempotency_key = ?').get(authorId, idempotencyKey) as any;
         if (existing) return { log: asWorkLog(existing), created: false };
         const now = new Date().toISOString();
-        const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: now, updatedAt: now };
-        sqlite.prepare('INSERT INTO work_logs (id, author_id, title, completed, in_progress, blockers, next_plan, idempotency_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, idempotencyKey, log.createdAt, log.updatedAt);
+        const reportDate = resolveReportDate(input.reportDate, new Date(now));
+        const log: LocalWorkLog = { id: crypto.randomUUID(), authorId, reportDate, title: input.title, completed: input.completed, inProgress: input.inProgress ?? '', blockers: input.blockers ?? '', nextPlan: input.nextPlan ?? '', createdAt: now, updatedAt: now };
+        sqlite.prepare('INSERT INTO work_logs (id, author_id, report_date, title, completed, in_progress, blockers, next_plan, idempotency_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(log.id, log.authorId, log.reportDate, log.title, JSON.stringify(log.completed), log.inProgress, log.blockers, log.nextPlan, idempotencyKey, log.createdAt, log.updatedAt);
         writeAuditEvent(authorId, 'WORK_LOG_CREATED', 'WORK_LOG', log.id);
         return { log, created: true };
       })();
@@ -206,16 +208,17 @@ export function createDatabase(filename = process.env.LOCAL_DATABASE_PATH ?? 'wo
       const where: string[] = [];
       const values: unknown[] = [];
       const normalizedQuery = options.query?.trim();
-      const from = options.from;
-      const to = options.to;
+      const from = options.from ? workTraceReportDate(new Date(options.from)) : undefined;
+      const to = options.to ? workTraceReportDate(new Date(options.to)) : undefined;
       let join = '';
       if (normalizedQuery) {
         join = 'JOIN work_logs_fts ON work_logs_fts.rowid = work_logs.rowid';
         where.push('work_logs_fts MATCH ?'); values.push(searchQuery(normalizedQuery));
       }
       if (options.authorId) { where.push('work_logs.author_id = ?'); values.push(options.authorId); }
-      if (from) { where.push('work_logs.created_at >= ?'); values.push(from); }
-      if (to) { where.push('work_logs.created_at < ?'); values.push(to); }
+      if (options.reportDate) { where.push('work_logs.report_date = ?'); values.push(options.reportDate); }
+      if (from) { where.push('work_logs.report_date >= ?'); values.push(from); }
+      if (to) { where.push('work_logs.report_date < ?'); values.push(to); }
       if (cursor) { where.push('(work_logs.updated_at < ? OR (work_logs.updated_at = ? AND work_logs.id < ?))'); values.push(cursor.createdAt, cursor.createdAt, cursor.id); }
       const rows = sqlite.prepare(`SELECT work_logs.* FROM work_logs ${join}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY work_logs.updated_at DESC, work_logs.id DESC LIMIT ?`).all(...values, limit + 1) as any[];
       const hasMore = rows.length > limit;

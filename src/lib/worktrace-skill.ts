@@ -10,7 +10,7 @@ Configure the WorkTrace MCP server at \`${normalized}/mcp\`. Store the user's AP
 
 ## Create a log
 
-When the user provides raw work notes, summarize them into \`title\`, \`completed\`, \`inProgress\`, \`blockers\`, and \`nextPlan\`. \`title\` and a non-empty \`completed\` list are required. When present, \`inProgress\`, \`blockers\`, and \`nextPlan\` must each be arrays of concise items, never a semicolon-separated paragraph. Do not invent optional fields. Show the draft and ask the user to confirm before calling \`create_work_log\`.
+When the user provides raw work notes, summarize them into \`title\`, \`completed\`, \`inProgress\`, \`blockers\`, and \`nextPlan\`. \`title\` and a non-empty \`completed\` list are required. When the user explicitly says the log is for an earlier or specific day, include \`reportDate\` in \`YYYY-MM-DD\` format using the Asia/Shanghai calendar. Otherwise omit \`reportDate\` so WorkTrace uses today. Never submit future dates. When present, \`inProgress\`, \`blockers\`, and \`nextPlan\` must each be arrays of concise items, never a semicolon-separated paragraph. Do not invent optional fields. Show the draft, including its report date, and ask the user to confirm before calling \`create_work_log\`.
 
 ## Read logs
 

@@ -26,6 +26,6 @@ export default async function MyLogsPage({ searchParams }: PageProps) {
       <form className="wt-inline-search" action="/console/my-logs"><input name="q" defaultValue={query} aria-label={text('搜索我的日志', 'Search my logs')} placeholder={text('搜索我的日志…', 'Search my logs…')} /><button type="submit">{text('搜索', 'Search')}</button></form>
       <Link className="wt-primary-button" href="/console/logs/new">＋ {text('新建日志', 'New log')}</Link>
     </div>
-    <section className="wt-panel wt-log-scroll-panel"><div className="wt-list-labels wt-my-log-labels"><span>{text('工作日志', 'Work log')}</span><span>{text('提交人', 'Submitted by')}</span><span>{text('最后提交', 'Last submitted')}</span><span>{text('操作', 'Actions')}</span></div><MyLogList logs={myLogs} /></section>
+    <section className="wt-panel wt-log-scroll-panel"><div className="wt-list-labels wt-my-log-labels"><span>{text('工作日志', 'Work log')}</span><span>{text('提交人', 'Submitted by')}</span><span>{text('日报日期', 'Report date')}</span><span>{text('操作', 'Actions')}</span></div><MyLogList logs={myLogs} /></section>
   </div></ConsolePageFrame>;
 }

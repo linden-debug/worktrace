@@ -15,6 +15,6 @@ const adminNavigation = [
   { id: 'audit', href: '/console/admin/audit', label: '安全审计' },
 ];
 
-export const isAdminEmail = (email?: string | null) => (process.env.ADMIN_EMAILS ?? 'linden@example.com').split(',').map((item) => item.trim().toLowerCase()).includes(email?.toLowerCase() ?? '');
+export const isAdminEmail = (email?: string | null) => (process.env.ADMIN_EMAILS ?? 'linden@feedmob.com').split(',').map((item) => item.trim().toLowerCase()).includes(email?.toLowerCase() ?? '');
 export const visibleNavigation = (role: AppRole) => role === 'ADMIN' ? [...memberNavigation, ...adminNavigation] : memberNavigation;
 export const canManage = (role: AppRole) => role === 'ADMIN';

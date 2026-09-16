@@ -29,12 +29,23 @@ describe('agent work-log service', () => {
     });
   });
 
+  it('defaults, accepts, and validates report dates against the Shanghai calendar', () => {
+    const now = new Date('2026-09-16T12:00:00+08:00');
+    const defaulted = validateAgentWorkLog({ title: 'Today', completed: ['Done'] }, now);
+    const historical = validateAgentWorkLog({ reportDate: '2026-09-14', title: 'Catch-up', completed: ['Done'] }, now);
+    const future = validateAgentWorkLog({ reportDate: '2026-09-17', title: 'Future', completed: ['Done'] }, now);
+
+    expect(defaulted.data).toMatchObject({ reportDate: '2026-09-16' });
+    expect(historical.data).toMatchObject({ reportDate: '2026-09-14' });
+    expect(future.success).toBe(false);
+  });
+
   it('reports each member submission state using the Shanghai calendar date', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-03T12:00:00+08:00'));
     const db = database();
-    const submitted = db.findOrCreateUser('submitted@example.com', 'Submitted');
-    const missing = db.findOrCreateUser('missing@example.com', 'Missing');
+    const submitted = db.findOrCreateUser('submitted@feedmob.com', 'Submitted');
+    const missing = db.findOrCreateUser('missing@feedmob.com', 'Missing');
     db.createWorkLog(submitted.id, { title: 'Daily', completed: ['Done'] });
     const result = dailySubmissionStatus(db, '2026-09-03', new Date('2026-09-03T12:00:00+08:00'));
     expect(result.members).toEqual(expect.arrayContaining([
@@ -42,6 +53,16 @@ describe('agent work-log service', () => {
       expect.objectContaining({ id: missing.id, submitted: false, count: 0 }),
     ]));
     expect(result.timezone).toBe('Asia/Shanghai');
+  });
+
+  it('counts a catch-up log on its report date instead of its later submission timestamp', () => {
+    const db = database();
+    const submitted = db.findOrCreateUser('submitted@feedmob.com', 'Submitted');
+    db.upsertDailyWorkLog(submitted.id, { reportDate: '2026-09-14', title: 'Catch-up', completed: ['Done'] }, new Date('2026-09-16T12:00:00+08:00'));
+
+    const result = dailySubmissionStatus(db, '2026-09-14', new Date('2026-09-16T12:00:00+08:00'));
+
+    expect(result.members).toContainEqual(expect.objectContaining({ id: submitted.id, submitted: true, count: 1 }));
   });
 
   it('uses the Shanghai calendar at the UTC day boundary', () => {

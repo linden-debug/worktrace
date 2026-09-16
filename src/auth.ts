@@ -2,7 +2,7 @@ import NextAuth from 'next-auth';
 import Google from 'next-auth/providers/google';
 import { createDatabase } from '@/lib/db';
 
-const allowedDomain = 'example.com';
+const allowedDomain = 'feedmob.com';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [Google],

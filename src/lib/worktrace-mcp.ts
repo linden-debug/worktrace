@@ -18,7 +18,7 @@ type Database = {
   upsertDailyWorkLog(authorId: string, input: any): { log: unknown; created: boolean };
   upsertDailyWorkLogIdempotent(authorId: string, input: any, key: string): { log: unknown; created: boolean };
   updateWorkLog(id: string, actorId: string, actorRole: LocalUser['role'], input: any): unknown;
-  queryWorkLogs(options: { authorId?: string; query?: string; from?: string; to?: string; cursor?: string; limit?: number }): { items: Array<{ id: string; authorId: string; [key: string]: unknown }>; nextCursor: string | null };
+  queryWorkLogs(options: { authorId?: string; query?: string; reportDate?: string; from?: string; to?: string; cursor?: string; limit?: number }): { items: Array<{ id: string; authorId: string; [key: string]: unknown }>; nextCursor: string | null };
   getWorkLog(id: string): unknown;
   listUsers(): LocalUser[];
 };
@@ -28,11 +28,11 @@ export function createWorkTraceMcpServer(database: Database, user: LocalUser) {
   const server = new McpServer({ name: 'worktrace', version: '1.0.0' });
   server.registerTool('prepare_work_log', { description: workTraceMcpTools.prepare_work_log.description, inputSchema: { rawNotes: z.string().trim().min(1).max(10_000) } }, async ({ rawNotes }) => output({
     rawNotes,
-    instruction: 'Summarize these notes into title and completed (both required). When explicit, provide inProgress, blockers, and nextPlan as arrays of concise items, never as one semicolon-separated paragraph. Present the draft to the user for confirmation before calling create_work_log.',
+    instruction: 'Summarize these notes into title and completed (both required). When the user explicitly identifies a work-log date, include reportDate as YYYY-MM-DD; otherwise omit it so WorkTrace uses today in Asia/Shanghai. When explicit, provide inProgress, blockers, and nextPlan as arrays of concise items, never as one semicolon-separated paragraph. Present the draft to the user for confirmation before calling create_work_log.',
   }));
-  server.registerTool('create_work_log', { description: 'Create or replace the authenticated user\'s WorkTrace work log for today after the user confirms the draft.', inputSchema: { title: z.string(), completed: z.array(z.string()), inProgress: workLogSectionInputSchema.optional(), blockers: workLogSectionInputSchema.optional(), nextPlan: workLogSectionInputSchema.optional(), idempotencyKey: z.string().optional() } }, async ({ idempotencyKey, ...input }) => {
+  server.registerTool('create_work_log', { description: 'Create or replace the authenticated user\'s WorkTrace work log for an optional past or current Shanghai report date after the user confirms the draft. Omit reportDate to use today; future dates are rejected.', inputSchema: { reportDate: z.string().optional(), title: z.string(), completed: z.array(z.string()), inProgress: workLogSectionInputSchema.optional(), blockers: workLogSectionInputSchema.optional(), nextPlan: workLogSectionInputSchema.optional(), idempotencyKey: z.string().optional() } }, async ({ idempotencyKey, ...input }) => {
     const parsed = validateAgentWorkLog(input);
-    if (!parsed.success) return { content: [{ type: 'text' as const, text: 'Validation failed: title and at least one completed item are required.' }], isError: true };
+    if (!parsed.success) return { content: [{ type: 'text' as const, text: 'Validation failed: use a valid non-future reportDate (YYYY-MM-DD), a title, and at least one completed item.' }], isError: true };
     const result = idempotencyKey ? database.upsertDailyWorkLogIdempotent(user.id, parsed.data, idempotencyKey) : database.upsertDailyWorkLog(user.id, parsed.data);
     return output(result);
   });
